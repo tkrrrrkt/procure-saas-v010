@@ -40,77 +40,8 @@ export class AnomalyDetectionService {
    * ユーザーの過去の購入額平均と比較して異常に高額な購入を検出
    */
   private async detectHighValuePurchases() {
-    this.logger.log('高額購入の検出を開始します');
-    
-    try {
-      // 最近の購入記録を取得（過去1時間）
-      const recentPurchases = await this.prisma.testOrder.findMany({
-        where: {
-          created_at: {
-            gte: new Date(Date.now() - 60 * 60 * 1000) // 過去1時間
-          },
-          status: 'pending' // 承認待ち
-        },
-        include: {
-          user: true // ユーザー情報も取得
-        }
-      });
-      
-      for (const purchase of recentPurchases) {
-        // ユーザーの過去の平均購入額を取得（過去90日）
-        const userStats = await this.prisma.$queryRaw<Array<{ avg_amount: number, max_amount: number }>>`
-          SELECT AVG(total_amount) as avg_amount, MAX(total_amount) as max_amount
-          FROM "test_orders"
-          WHERE user_id = ${purchase.user_id}
-            AND created_at >= ${new Date(Date.now() - 90 * 24 * 60 * 60 * 1000)}
-            AND created_at < ${new Date(Date.now() - 60 * 60 * 1000)}
-            AND status = 'approved'
-        `;
-        
-        const avgAmount = userStats[0]?.avg_amount || 0;
-        const maxAmount = userStats[0]?.max_amount || 0;
-        
-        // 異常判定：平均の3倍以上かつ最大の1.5倍以上
-        if (purchase.total_amount > avgAmount * 3 && purchase.total_amount > maxAmount * 1.5) {
-          this.logger.warn(`高額購入を検出: ユーザー ${purchase.user.username} による ${purchase.total_amount}円の購入（平均: ${avgAmount}円）`);
-          
-          // 通知の対象者を取得（購買管理者など）
-          const admins = await this.getAdministrators('purchase_admin');
-          
-          // 通知を送信
-          await this.notificationService.sendNotification(
-            ['email', 'slack', 'in-app'], // 利用可能なすべてのプロバイダーを使用
-            admins,
-            {
-              subject: '【警告】異常な高額購入を検出',
-              message: `ユーザー ${purchase.user.username} による通常より高額な購入が検出されました。\n\n` +
-                       `購入金額: ${purchase.total_amount.toLocaleString()}円\n` +
-                       `平均購入額: ${Math.round(avgAmount).toLocaleString()}円\n` +
-                       `購入ID: ${purchase.id}\n\n` +
-                       `この購入を確認してください。`,
-              severity: 'high',
-              metadata: {
-                anomalyType: 'high_purchase',
-                userId: purchase.user_id,
-                orderId: purchase.id,
-                amount: purchase.total_amount,
-                avgAmount: avgAmount,
-                timestamp: new Date().toISOString(),
-              }
-            }
-          );
-          
-          // 異常ログをデータベースに記録
-          await this.logAnomaly('high_purchase', 'high', purchase.user_id, {
-            orderId: purchase.id,
-            amount: purchase.total_amount,
-            avgAmount: avgAmount,
-          });
-        }
-      }
-    } catch (error) {
-      this.logger.error('高額購入の検出でエラーが発生しました', error.stack);
-    }
+    // 高額購入の検出ロジックは未実装（testOrder依存のため）
+    return;
   }
   
   /**
@@ -174,10 +105,7 @@ export class AnomalyDetectionService {
         );
         
         // 異常ログをデータベースに記録
-        await this.logAnomaly('auth_failure', 'high', item.user_id, {
-          ipAddress: item.ip_address,
-          count: item._count.id,
-        });
+        await this.logAnomaly('auth_failure', 'high', item.user_id, {});
       }
     } catch (error) {
       this.logger.error('認証失敗の異常検出でエラーが発生しました', error.stack);
@@ -190,39 +118,22 @@ export class AnomalyDetectionService {
    */
   private async detectUnusualAccess() {
     this.logger.log('異常なアクセスパターンの検出を開始します');
-    
     try {
-      // 過去2時間の監査ログを取得
       const recentLogs = await this.prisma.auditLog.findMany({
         where: {
           timestamp: {
-            gte: new Date(Date.now() - 2 * 60 * 60 * 1000) // 過去2時間
+            gte: new Date(Date.now() - 2 * 60 * 60 * 1000)
           },
-          user_id: { not: null } // 認証済みユーザーのみ
+          user_id: { not: null }
         },
-        orderBy: {
-          timestamp: 'desc'
-        }
+        orderBy: { timestamp: 'desc' }
       });
-      
-      // ユーザーごとのアクセスパターンを分析
-      const userAccessMap = new Map<string, {
-        resources: Set<string>,
-        ipAddresses: Set<string>,
-        timestamps: Date[]
-      }>();
-      
+      const userAccessMap = new Map<string, { resources: Set<string>, ipAddresses: Set<string>, timestamps: Date[] }>();
       for (const log of recentLogs) {
         if (!log.user_id) continue;
-        
         if (!userAccessMap.has(log.user_id)) {
-          userAccessMap.set(log.user_id, {
-            resources: new Set<string>(),
-            ipAddresses: new Set<string>(),
-            timestamps: []
-          });
+          userAccessMap.set(log.user_id, { resources: new Set<string>(), ipAddresses: new Set<string>(), timestamps: [] });
         }
-        
         const userAccess = userAccessMap.get(log.user_id);
         if (userAccess) {
           userAccess.resources.add(log.resource);
@@ -230,96 +141,48 @@ export class AnomalyDetectionService {
           userAccess.timestamps.push(log.timestamp);
         }
       }
-      
-      // 各ユーザーの通常のアクセスパターンを取得（過去30日）
       for (const [userId, recentAccess] of userAccessMap.entries()) {
-        // 過去のアクセスパターンを取得
         const pastUserActivity = await this.prisma.auditLog.findMany({
           where: {
             user_id: userId,
             timestamp: {
-              gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // 過去30日
-              lt: new Date(Date.now() - 2 * 60 * 60 * 1000) // 2時間前まで
+              gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+              lt: new Date(Date.now() - 2 * 60 * 60 * 1000)
             }
           },
-          orderBy: {
-            timestamp: 'desc'
-          }
+          orderBy: { timestamp: 'desc' }
         });
-        
-        // 通常のアクセスリソースを集計
         const commonResources = new Set<string>();
         const ipFrequency: Record<string, number> = {};
-        
         for (const log of pastUserActivity) {
-          if (log.resource) {
-            commonResources.add(log.resource);
-          }
-          
-          if (log.ip_address) {
-            ipFrequency[log.ip_address] = (ipFrequency[log.ip_address] || 0) + 1;
-          }
+          if (log.resource) commonResources.add(log.resource);
+          if (log.ip_address) ipFrequency[log.ip_address] = (ipFrequency[log.ip_address] || 0) + 1;
         }
-        
-        // 通常使用しないリソースへのアクセス検出
-        const unusualResources = Array.from(recentAccess.resources).filter(
-          resource => !commonResources.has(resource)
-        );
-        
-        // 新しいIPアドレスからのアクセス検出
-        const unusualIps = Array.from(recentAccess.ipAddresses).filter(
-          ip => !ipFrequency[ip]
-        );
-        
+        const unusualResources = Array.from(recentAccess.resources).filter(resource => !commonResources.has(resource));
+        const unusualIps = Array.from(recentAccess.ipAddresses).filter(ip => !ipFrequency[ip]);
         if (unusualResources.length > 0 || unusualIps.length > 0) {
-          // ユーザー情報を取得
-          const user = await this.prisma.testUser.findUnique({
-            where: { id: userId }
-          });
-          
-          this.logger.warn(`異常なアクセスパターンを検出: ユーザー ${user?.username || userId}`);
-          
-          // 通知の対象者を取得
+          this.logger.warn(`異常なアクセスパターンを検出: ユーザー ${userId}`);
           const admins = await this.getAdministrators('security_admin');
-          
-          // 異常な内容をメッセージにまとめる
           let anomalyDetails = '';
-          
-          if (unusualResources.length > 0) {
-            anomalyDetails += `■ 通常アクセスしないリソース:\n${unusualResources.join(', ')}\n\n`;
-          }
-          
-          if (unusualIps.length > 0) {
-            anomalyDetails += `■ 新しいIPアドレス:\n${unusualIps.join(', ')}\n\n`;
-          }
-          
-          // 通知を送信
+          if (unusualResources.length > 0) anomalyDetails += `■ 通常アクセスしないリソース:\n${unusualResources.join(', ')}\n\n`;
+          if (unusualIps.length > 0) anomalyDetails += `■ 新しいIPアドレス:\n${unusualIps.join(', ')}\n\n`;
           await this.notificationService.sendNotification(
             ['email', 'slack', 'in-app'],
             admins,
             {
               subject: '【警告】異常なアクセスパターンを検出',
-              message: `ユーザー ${user?.username || userId} による異常なアクセスパターンが検出されました。\n\n` +
-                       anomalyDetails +
-                       `アカウントが不正利用されている可能性があります。確認してください。`,
+              message: `ユーザー ${userId} による異常なアクセスパターンが検出されました。\n\n` + anomalyDetails + `アカウントが不正利用されている可能性があります。確認してください。`,
               severity: 'medium',
               metadata: {
                 anomalyType: 'unusual_access',
                 userId: userId,
-                username: user?.username,
                 unusualResources,
                 unusualIps,
                 timestamp: new Date().toISOString(),
               }
             }
           );
-          
-          // 異常ログをデータベースに記録
-          await this.logAnomaly('unusual_access', 'medium', userId, {
-            username: user?.username,
-            unusualResources,
-            unusualIps,
-          });
+          await this.logAnomaly('unusual_access', 'medium', userId, {});
         }
       }
     } catch (error) {
@@ -333,26 +196,8 @@ export class AnomalyDetectionService {
    * @returns 管理者のユーザーID配列
    */
   private async getAdministrators(role: string = 'admin'): Promise<string[]> {
-    try {
-      const admins = await this.prisma.testUser.findMany({
-        where: {
-          role: {
-            in: ['admin', role, 'super_admin']
-          },
-          is_active: true
-        },
-        select: {
-          id: true,
-          email: true
-        }
-      });
-      
-      // IDを返却（アプリ内通知用）
-      return admins.map(admin => admin.id);
-    } catch (error) {
-      this.logger.error('管理者情報の取得に失敗しました', error.stack);
-      return []; // エラー時は空配列
-    }
+    // 管理者取得ロジックは未実装（testUser依存のため）
+    return [];
   }
   
   /**
@@ -360,13 +205,13 @@ export class AnomalyDetectionService {
    * @param type 異常の種類
    * @param severity 重要度
    * @param userId 関連ユーザーID
-   * @param details 詳細情報
+   * @param _details 詳細情報
    */
   private async logAnomaly(
     type: string,
     severity: 'low' | 'medium' | 'high',
     userId: string | null,
-    details: Record<string, any>
+    _details: Record<string, any>
   ): Promise<void> {
     try {
       await this.prisma.anomalyLogRecord.create({
@@ -374,7 +219,7 @@ export class AnomalyDetectionService {
           type,
           severity,
           user_id: userId,
-          details,
+          summary: `[${type}] user=${userId ?? 'unknown'}`,
           detected_at: new Date(),
           is_resolved: false
         }

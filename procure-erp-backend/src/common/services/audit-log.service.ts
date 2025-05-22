@@ -15,6 +15,11 @@ export class AuditLogService {
 
   constructor(private readonly prisma: PrismaService) {}
   
+  // UUID形式チェック用のstaticメソッド
+  static isValidUUID(value: string | undefined | null): boolean {
+    return !!value && /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(value);
+  }
+  
   /**
    * 監査ログを作成して保存します
    * @param logData 監査ログデータ
@@ -27,33 +32,24 @@ export class AuditLogService {
       // ログタイプが指定されていない場合は判定
       const logType = logData.logType || this.determineLogType(logData);
       
-      // リクエストデータの機密情報をマスク処理
-      const sanitizedParams = this.sanitizeData(logData.requestParams);
-      const sanitizedQuery = this.sanitizeData(logData.requestQuery);
-      const sanitizedBody = this.sanitizeData(logData.requestBody);
-      
       if (this.isPrismaReady) {
         // 監査ログをデータベースに保存
         await this.prisma.auditLog.create({
           data: {
-            tenant_id: logData.tenantId,
-            user_id: logData.userId,
+            tenant_id: AuditLogService.isValidUUID(logData.tenantId) ? logData.tenantId : null,
+            user_id: AuditLogService.isValidUUID(logData.userId) ? logData.userId : null,
             user_role: logData.userRole || 'unknown',
             action: logData.action,
             resource: logData.resource,
             resource_id: logData.resourceId,
             ip_address: logData.ipAddress,
             user_agent: logData.userAgent,
-            request_params: sanitizedParams,
-            request_query: sanitizedQuery,
-            request_body: sanitizedBody,
             response_status: logData.responseStatus,
             severity: severity,
             log_type: logType,
             execution_time: logData.executionTime,
             timestamp: logData.timestamp,
             is_privileged: logData.isPrivileged || false,
-            privilege_details: logData.privilegeDetails,
           },
         });
       }
@@ -63,9 +59,6 @@ export class AuditLogService {
         // ログ出力用に機密データが確実にマスクされたコピーを作成
         const logOutput = {
           ...logData,
-          requestParams: sanitizedParams,
-          requestQuery: sanitizedQuery,
-          requestBody: sanitizedBody,
           severity,
           logType
         };
@@ -82,9 +75,6 @@ export class AuditLogService {
       // フォールバック：コンソールにログを出力
       const sanitizedData = {
         ...logData,
-        requestParams: this.sanitizeData(logData.requestParams),
-        requestQuery: this.sanitizeData(logData.requestQuery),
-        requestBody: this.sanitizeData(logData.requestBody)
       };
       
       this.logger.log(

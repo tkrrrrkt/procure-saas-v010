@@ -27,34 +27,44 @@ export class AuthService {
    */
   async validateUser(username: string, password: string): Promise<{ id: string; username: string; role: string; tenant_id?: string } | null> {
     try {
-      let user = await this.prismaService.empAccount.findFirst({
-        where: { emp_account_cd: username },
+      // LoginAccountから認証情報を取得
+      const loginAccount = await this.prismaService.loginAccount.findFirst({
+        where: {
+          auth_method: 'LOCAL',
+          identifier: username,
+        },
+        include: {
+          emp_account: {
+            include: {
+              roles: {
+                include: { role: true }
+              }
+            }
+          },
+        },
       });
 
-      // Fallback to mock DB
-      if (!user && this.useMockDb) {
-        if (username === 'test' && password === 'test') {
-          return { id: '3', username: 'test', role: 'USER' };
-        }
-        if (username === 'admin' && password === 'password') {
-          return { id: '1', username: 'admin', role: 'ADMIN' };
-        }
-      }
+      if (!loginAccount || !loginAccount.password_hash) return null;
 
-      if (!user || !user.password_hash) return null;
-
-      const isPasswordValid = await bcrypt.compare(password, user.password_hash);
+      const isPasswordValid = await bcrypt.compare(password, loginAccount.password_hash);
       if (!isPasswordValid) return null;
 
+      // 最終ログイン時刻を更新
+      await this.prismaService.loginAccount.update({
+        where: { id: loginAccount.id },
+        data: {
+          last_login_at: new Date(),
+        },
+      });
+
       return {
-        id: user.emp_account_id,
-        username: user.emp_account_cd,
-        role: user.role,
-        tenant_id: user.tenant_id,
+        id: loginAccount.emp_account.id,
+        username: loginAccount.emp_account.employee_code,
+        role: loginAccount.emp_account.roles[0]?.role.name ?? '',
+        tenant_id: loginAccount.emp_account.tenant_id,
       };
     } catch (error) {
-      // Log & swallow to prevent auth leakage
-      console.error('validateUser error:', error);
+      this.logger.error(`認証エラー: ${error.message}`);
       return null;
     }
   }
@@ -110,35 +120,40 @@ export class AuthService {
    */
   async refreshToken(token: string): Promise<RefreshTokenResponseDto> {
     try {
-      // リフレッシュトークンを検証（JWT_REFRESH_SECRETで署名されている）
       const decoded = this.jwtService.verify(token, {
         secret: this.configService.get('JWT_REFRESH_SECRET'),
       });
       
-      // ユーザー情報を取得
-      const user = await this.prismaService.empAccount.findUnique({
+      const loginAccount = await this.prismaService.loginAccount.findFirst({
         where: { emp_account_id: decoded.sub },
+        include: {
+          emp_account: {
+            include: {
+              roles: {
+                include: { role: true }
+              }
+            }
+          },
+        },
       });
 
-      if (!user) {
+      if (!loginAccount) {
         throw new UnauthorizedException('無効なユーザーです');
       }
 
-      // 新しいペイロードを作成
       const payload = { 
-        sub: user.emp_account_id, 
-        username: user.emp_account_cd, 
-        role: user.role,
-        tenant_id: user.tenant_id
+        sub: loginAccount.emp_account.id,
+        username: loginAccount.emp_account.employee_code,
+        role: loginAccount.emp_account.roles[0]?.role.name ?? '',
+        tenant_id: loginAccount.emp_account.tenant_id
       };
 
-      // 新しいトークンを発行
       const accessToken = this.jwtService.sign(payload, { 
         expiresIn: this.configService.get<string>('JWT_EXPIRATION', '4h') 
       });
       
       const refreshToken = this.jwtService.sign(
-        { sub: user.emp_account_id },
+        { sub: loginAccount.emp_account.id },
         { 
           secret: this.configService.get('JWT_REFRESH_SECRET'),
           expiresIn: this.configService.get('JWT_REFRESH_EXPIRATION', '30d') 
@@ -150,9 +165,9 @@ export class AuthService {
         accessToken,
         refreshToken,
         user: {
-          id: user.emp_account_id,
-          username: user.emp_account_cd,
-          role: user.role,
+          id: loginAccount.emp_account.id,
+          username: loginAccount.emp_account.employee_code,
+          role: loginAccount.emp_account.roles[0]?.role.name ?? '',
         },
       };
     } catch (error) {

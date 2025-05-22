@@ -1,0 +1,24 @@
+---
+description: プロジェクト全体のTypeScriptコーディング規約、命名規則、コメント、エラーハンドリング、テストに関する基本ガイドライン。
+globs: ["**/*.ts", "**/*.tsx"] # TypeScriptファイルに適用 [cite: 5]
+alwaysApply: true # 常に適用 [cite: 5]
+priority: 2
+tags: ["typescript", "coding-style", "best-practices"]
+version: "1.0.0"
+---
+# 共通TypeScript/コーディング規約
+
+## 3.1. 全体
+- **言語**: TypeScriptを必須とし、厳格な型安全性を確保すること。`any` 型の使用は極力避ける。 [cite: 6]
+- **命名規則**: [cite: 6]
+    - 変数、関数、ファイル名: `camelCase` [cite: 6]
+    - クラス、インターフェース、型: `PascalCase` [cite: 6]
+    - 定数: `SCREAMING_SNAKE_CASE` [cite: 6]
+- **コメント**: [cite: 6]
+    - 複雑なロジックやビジネスルールにはJSDoc形式でコメントを付与し、説明的なコメントを記述すること。 [cite: 6]
+    - TODOコメントは必ず期限または関連するIssue/PRを明記すること。 [cite: 6]
+- **エラーハンドリング**: [cite: 6]
+    - フロントエンド: `lib/utils/error-handler.ts` を使用し、ユーザーフレンドリーなエラーメッセージを表示すること。ユーザーへのフィードバック（トースト通知 (`use-toast.ts`, `toaster.tsx`), エラーページの表示など）を含む、包括的かつユーザーフレンドリーなエラー処理フローを実装すること。 [cite: 6]
+- **テスト**: 各機能には単体テストおよびE2Eテスト (.spec.ts) を記述すること。テストカバレッジの向上と維持に努めること。特に既存モジュールのテスト不足を解消すること。 [cite: 6]
+    - モックデータ (`mock-prisma.service.ts` 等) を効果的に活用すること。Jest設定 (`test/jest-e2e.json`) を遵守すること。 [cite: 6]
+- **ドキュメント**: コードコメントに加え、APIドキュメント（Swagger/OpenAPI）の自動生成を考慮し、プロジェクト全体の設計文書も整備すること。 [cite: 6]
